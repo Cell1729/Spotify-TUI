@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { render, Box, Text, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import SelectInput from 'ink-select-input';
-import { getFollowedArtists, getUserPlaylists, transferPlayback, getArtistTopTracks, setShuffle, getArtistAlbums, getAlbumTracks } from './spotify.js';
+import { getFollowedArtists, getUserPlaylists, transferPlayback, getArtistTopTracks, setShuffle, getArtistAlbums, getAlbumTracks, getPlaylistTracks } from './spotify.js';
 
 const HelpModal = ({ columns, rows, keys }) => {
   const commands = [
@@ -217,10 +217,25 @@ const TuiApp = ({ spotifyApi, keys }) => {
     if (showHelp || mode === 'INSERT' || skipNextAction) return;
     
     await execCommand(async () => {
-      // プレイリストを選択
+      // プレイリストを選択 -> 楽曲一覧を表示
       if (item.type === 'playlist') {
-        await spotifyApi.play({ context_uri: `spotify:playlist:${item.value}` });
+        setHistory([...history, { items: searchResults, query: searchQuery }]);
+        setStatusMessage(`Loading playlist: ${item.label}...`);
+        const tracks = await getPlaylistTracks(spotifyApi, item.value);
+        const nextResults = [
+          { label: '→ [Play Playlist All]', value: item.value, type: 'playlist-play-all', shuffle: false },
+          { label: '→ [Shuffle Playlist All]', value: item.value, type: 'playlist-play-all', shuffle: true },
+          ...tracks.map(t => ({ label: `${t.name} - ${t.artists[0].name}`, value: t.uri, type: 'track' }))
+        ];
+        setSearchResults(nextResults);
+        setSearchQuery(`Playlist: ${item.label}`);
+        setFocus('right-results');
       } 
+      // プレイリスト全体再生
+      else if (item.type === 'playlist-play-all') {
+        await setShuffle(spotifyApi, item.shuffle);
+        await spotifyApi.play({ context_uri: `spotify:playlist:${item.value}` });
+      }
       // アーティストを選択 -> オプションメニューを表示
       else if (item.type === 'artist') {
         const nextResults = [
