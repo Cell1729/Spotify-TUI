@@ -1,0 +1,41 @@
+{
+  "name": "spotify-tui",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "bin": {
+    "spt": "./bin/spt.js"
+  },
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Cell1729/Spotify-TUI.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "bugs": {
+    "url": "https://github.com/Cell1729/Spotify-TUI/issues"
+  },
+  "homepage": "https://github.com/Cell1729/Spotify-TUI#readme",
+  "dependencies": {
+    "@types/node": "^25.4.0",
+    "commander": "^14.0.3",
+    "dotenv": "^17.3.1",
+    "ink": "^6.8.0",
+    "ink-select-input": "^6.2.0",
+    "ink-text-input": "^6.0.0",
+    "open": "^11.0.0",
+    "react": "^19.2.4",
+    "spotify-web-api-node": "^5.0.2"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
+  }
+}
