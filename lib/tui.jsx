@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { render, Box, Text, useInput, useStdout } from 'ink';
 import TextInput from 'ink-text-input';
 import SelectInput from 'ink-select-input';
-import { getFollowedArtists, getUserPlaylists, transferPlayback } from './spotify.js';
+import { getFollowedArtists, getUserPlaylists, transferPlayback, getArtistTopTracks, setShuffle, getArtistAlbums, getAlbumTracks } from './spotify.js';
 
 const HelpModal = ({ columns, rows, keys }) => {
   const commands = [
@@ -12,8 +12,10 @@ const HelpModal = ({ columns, rows, keys }) => {
     { key: 'Tab', desc: '各カラムを順番にフォーカス' },
     { key: 'j / k (Arrow)', desc: 'リスト移動（Normal Mode）' },
     { key: 'Enter', desc: '選択アイテムを決定' },
+    { key: 'Backspace', desc: '前のリストに戻る' },
     { key: keys.playPause === ' ' ? 'Space' : keys.playPause, desc: '再生 / 一時停止' },
     { key: keys.next + ' / ' + keys.previous, desc: '曲送り / 曲戻し' },
+    { key: keys.shuffle, desc: 'シャッフル ON / OFF' },
     { key: keys.volumeUp + ' / ' + keys.volumeDown, desc: '音量 +/-' },
     { key: keys.help, desc: 'ヘルプ画面' },
     { key: keys.quit, desc: '終了' }
@@ -61,6 +63,7 @@ const TuiApp = ({ spotifyApi, keys }) => {
   const [followedArtists, setFollowedArtists] = useState([]);
   const [devices, setDevices] = useState([]);
   const [searchResults, setSearchResults] = useState([]);
+  const [history, setHistory] = useState([]); // 戻るための履歴
   const [focus, setFocus] = useState('left-playlists');
   const [searchQuery, setSearchQuery] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
@@ -159,6 +162,14 @@ const TuiApp = ({ spotifyApi, keys }) => {
       return;
     }
 
+    if (key.backspace && focus === 'right-results' && history.length > 0) {
+      const prev = history[history.length - 1];
+      setSearchResults(prev.items);
+      setSearchQuery(prev.query);
+      setHistory(history.slice(0, -1));
+      return;
+    }
+
     if (input === keys.quit) {
       process.stdout.write('\x1b[?1049l');
       process.exit(0);
@@ -194,17 +205,87 @@ const TuiApp = ({ spotifyApi, keys }) => {
     if (input === keys.previous) { execCommand(() => spotifyApi.skipToPrevious()); return; }
     if (input === keys.volumeUp) { execCommand(() => spotifyApi.setVolume(Math.min(100, (playback?.device?.volume_percent || 50) + 10))); return; }
     if (input === keys.volumeDown) { execCommand(() => spotifyApi.setVolume(Math.max(0, (playback?.device?.volume_percent || 50) - 10))); return; }
+    
+    if (input === keys.shuffle) {
+      const newState = !playback?.shuffle_state;
+      execCommand(() => setShuffle(spotifyApi, newState));
+      return;
+    }
   });
 
   const handleSelect = async (item) => {
     if (showHelp || mode === 'INSERT' || skipNextAction) return;
     
     await execCommand(async () => {
-      if (item.type === 'playlist') await spotifyApi.play({ context_uri: `spotify:playlist:${item.value}` });
+      // プレイリストを選択
+      if (item.type === 'playlist') {
+        await spotifyApi.play({ context_uri: `spotify:playlist:${item.value}` });
+      } 
+      // アーティストを選択 -> オプションメニューを表示
       else if (item.type === 'artist') {
-        const top = await spotifyApi.getArtistTopTracks(item.value, 'JP');
-        await spotifyApi.play({ uris: top.body.tracks.map(t => t.uri) });
-      } else if (item.type === 'track') await spotifyApi.play({ uris: [item.value] });
+        const nextResults = [
+          { label: '→ [Shuffle All Tracks]', value: item.value, type: 'artist-shuffle-all', artistName: item.label },
+          { label: '→ [Popular Tracks]', value: item.value, type: 'artist-top-tracks-menu', artistName: item.label },
+          { label: '→ [Albums]', value: item.value, type: 'artist-albums-menu', artistName: item.label }
+        ];
+        setSearchResults(nextResults);
+        setSearchQuery(`Artist: ${item.label}`);
+        setFocus('right-results');
+        setHistory([]);
+      } 
+      // アーティスト：全曲シャッフル
+      else if (item.type === 'artist-shuffle-all') {
+        setStatusMessage(`Collecting tracks for ${item.artistName}...`);
+        const albums = await getArtistAlbums(spotifyApi, item.value);
+        let allTracks = [];
+        // 最初の数枚のアルバムからのみ取得（負荷軽減のため）
+        const targetAlbums = albums.slice(0, 10);
+        for (const album of targetAlbums) {
+          const tracks = await getAlbumTracks(spotifyApi, album.id);
+          allTracks = allTracks.concat(tracks.map(t => t.uri));
+          if (allTracks.length >= 100) break;
+        }
+        // シャッフルしてから再生
+        const shuffled = allTracks.sort(() => Math.random() - 0.5);
+        await setShuffle(spotifyApi, true);
+        await spotifyApi.play({ uris: shuffled.slice(0, 50) });
+      }
+      // アーティスト：トップトラック一覧を表示
+      else if (item.type === 'artist-top-tracks-menu') {
+        setHistory([...history, { items: searchResults, query: searchQuery }]);
+        const tracks = await getArtistTopTracks(spotifyApi, item.value);
+        setSearchResults(tracks.map(t => ({ label: t.name, value: t.uri, type: 'track' })));
+        setSearchQuery(`Artist: ${item.artistName} (Top Tracks)`);
+      }
+      // アーティスト：アルバム一覧を表示
+      else if (item.type === 'artist-albums-menu') {
+        setHistory([...history, { items: searchResults, query: searchQuery }]);
+        const albums = await getArtistAlbums(spotifyApi, item.value);
+        setSearchResults(albums.map(a => ({ label: `Album: ${a.name}`, value: a.id, type: 'album', albumName: a.name })));
+        setSearchQuery(`Artist: ${item.artistName} (Albums)`);
+      }
+      // アルバムを選択 -> 楽曲リスト（と再生オプション）を表示
+      else if (item.type === 'album') {
+        setHistory([...history, { items: searchResults, query: searchQuery }]);
+        const tracks = await getAlbumTracks(spotifyApi, item.value);
+        const nextResults = [
+          { label: '→ [Play Album All]', value: item.value, type: 'album-play-all', shuffle: false },
+          { label: '→ [Shuffle Album All]', value: item.value, type: 'album-play-all', shuffle: true },
+          ...tracks.map(t => ({ label: t.name, value: t.uri, type: 'track' }))
+        ];
+        setSearchResults(nextResults);
+        setSearchQuery(`Album: ${item.albumName}`);
+      }
+      // アルバム全体再生
+      else if (item.type === 'album-play-all') {
+        await setShuffle(spotifyApi, item.shuffle);
+        await spotifyApi.play({ context_uri: `spotify:album:${item.value}` });
+      }
+      // 楽曲を単体選択
+      else if (item.type === 'track') {
+        await spotifyApi.play({ uris: [item.value] });
+      } 
+      // デバイス切り替え
       else if (item.type === 'device') {
         await transferPlayback(spotifyApi, item.value);
         fetchData();
@@ -220,8 +301,10 @@ const TuiApp = ({ spotifyApi, keys }) => {
         value: t.uri, 
         type: 'track' 
       })));
+      setSearchQuery(`Search: ${val}`);
       setFocus('right-results');
       setMode('NORMAL');
+      setHistory([]);
       setSkipNextAction(true);
     } catch (err) {
       setStatusMessage('Search failed.');
@@ -271,12 +354,16 @@ const TuiApp = ({ spotifyApi, keys }) => {
                 <Text color="gray" wrap="truncate-end">{playback.item.artists.map(a => a.name).join(', ')}</Text>
                 <Box marginTop={1}>
                   <Text color="green" bold>{playback.is_playing ? '▶ PLAYING' : '|| PAUSED'}</Text>
+                  <Text color="magenta" bold> {playback.shuffle_state ? ' [Shuffle ON]' : ''}</Text>
                 </Box>
                 <Box marginTop={1}>
                   <Text>{renderVolume(playback.device.volume_percent)}</Text>
                 </Box>
                 <Box marginTop={1} borderStyle="round" paddingX={1}>
-                   <Text> [{keys.previous}] Prev | Space Play/Pause | [{keys.next}] Next </Text>
+                   <Text> [{keys.previous}] Prev | Space Play | [{keys.next}] Next </Text>
+                </Box>
+                <Box>
+                   <Text color="gray">Shuffle: [{keys.shuffle}] Toggle </Text>
                 </Box>
               </Box>
             ) : (
@@ -320,7 +407,7 @@ const TuiApp = ({ spotifyApi, keys }) => {
         {statusMessage ? (
           <Text color="white" backgroundColor="red" bold> {statusMessage} </Text>
         ) : (
-          <Text color="gray"> [NORMAL] {keys.enterSearch}: Search | Tab: Cycle | {keys.focusPlaylists}{keys.focusArtists}{keys.focusPlayer}{keys.focusSearch}: Jump </Text>
+          <Text color="gray"> [NORMAL] {keys.enterSearch}: Search | Tab: Cycle | BS: Back | {keys.focusPlaylists}{keys.focusArtists}{keys.focusPlayer}{keys.focusSearch}: Jump </Text>
         )}
         <Text color="gray">
           {mode === 'INSERT' ? <Text color="yellow" bold>INSERT MODE: Type to search, Enter to exec, Esc to cancel</Text> : `Jump: ${keys.focusPlaylists}, ${keys.focusArtists}, ${keys.focusPlayer}, ${keys.focusSearch}`}
