@@ -15,7 +15,7 @@ async function main() {
     .option('-i, --interactive', '起動 Spotify TUI インタラクティブモード')
     .action(async (options) => {
       if (options.interactive) {
-        await startTui(spotifyApi);
+        await startTui(spotifyApi, config.keybindings);
         return;
       }
     });
